@@ -57,7 +57,7 @@ class PatchEmbed(nn.Module):
         self.norm = norm_layer(embed_dim) if norm_layer else nn.Identity()
 
     def forward(self, x):
-        B, C, H, W = x.shape
+        B, C, H, W = x.shape # 传入的数据必须是固定的大小，因为位置编码大小固定
         assert H == self.img_size[0] and W == self.img_size[1], \
             f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
 
@@ -100,7 +100,7 @@ class Attention(nn.Module):
         # @: multiply -> [batch_size, num_heads, num_patches + 1, num_patches + 1]
         attn = (q @ k.transpose(-2, -1)) * self.scale
         attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
+        attn = self.attn_drop(attn) # 到这里的时候是多个头的注意力矩阵
 
         # @: multiply -> [batch_size, num_heads, num_patches + 1, embed_dim_per_head]
         # transpose: -> [batch_size, num_patches + 1, num_heads, embed_dim_per_head]

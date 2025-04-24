@@ -94,23 +94,32 @@ class PatchEmbed(nn.Module):
         self.patch_size = patch_size
         self.in_chans = in_c
         self.embed_dim = embed_dim
+        # 用一个卷积层就可以实现embedding和patch partition操作
         self.proj = nn.Conv2d(in_c, embed_dim, kernel_size=patch_size, stride=patch_size)
         self.norm = norm_layer(embed_dim) if norm_layer else nn.Identity()
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor):
+        """
+        把输入图片打成一个个patch
+        Args:
+            x: tensor shape=[B, C, H, W]
+        Returns:
+            x: patch partition之后的图片矩阵
+            H, W: 特征矩阵的高宽
+        """
         _, _, H, W = x.shape
 
         # padding
         # 如果输入图片的H，W不是patch_size的整数倍，需要进行padding
         pad_input = (H % self.patch_size[0] != 0) or (W % self.patch_size[1] != 0)
         if pad_input:
-            # to pad the last 3 dimensions,
+            # 填充最后的三个维度，从后往前pad
             # (W_left, W_right, H_top,H_bottom, C_front, C_back)
             x = F.pad(x, (0, self.patch_size[1] - W % self.patch_size[1],
                           0, self.patch_size[0] - H % self.patch_size[0],
                           0, 0))
 
-        # 下采样patch_size倍
+        # 下采样patch_size倍 [B, C ,H, W] -> [B, C, H/patch_size, W/patch_size]
         x = self.proj(x)
         _, _, H, W = x.shape
         # flatten: [B, C, H, W] -> [B, C, HW]
@@ -218,14 +227,16 @@ class WindowAttention(nn.Module):
         coords_h = torch.arange(self.window_size[0])
         coords_w = torch.arange(self.window_size[1])
         coords = torch.stack(torch.meshgrid([coords_h, coords_w], indexing="ij"))  # [2, Mh, Mw]
-        coords_flatten = torch.flatten(coords, 1)  # [2, Mh*Mw]
+        coords_flatten = torch.flatten(coords, 1)  # [2, Mh*Mw] # 得到Window中的绝对位置索引，0表示行，1表示列
         # [2, Mh*Mw, 1] - [2, 1, Mh*Mw]
+        # 使用广播机制，在最后一个维度+1表示把这个复制多份，然后与每个其他的相减就得到了相对位置的行列坐标
         relative_coords = coords_flatten[:, :, None] - coords_flatten[:, None, :]  # [2, Mh*Mw, Mh*Mw]
+        # 重新排列，就得到了以窗口中每个位置为参考的相对位置索引，第一个维度是以哪个窗口作为参考，第二个维度表示各个窗口，第三个维度表示横纵坐标
         relative_coords = relative_coords.permute(1, 2, 0).contiguous()  # [Mh*Mw, Mh*Mw, 2]
-        relative_coords[:, :, 0] += self.window_size[0] - 1  # shift to start from 0
+        relative_coords[:, :, 0] += self.window_size[0] - 1  # shift to start from 0 在行列坐标上都 + m - 1
         relative_coords[:, :, 1] += self.window_size[1] - 1
-        relative_coords[:, :, 0] *= 2 * self.window_size[1] - 1
-        relative_position_index = relative_coords.sum(-1)  # [Mh*Mw, Mh*Mw]
+        relative_coords[:, :, 0] *= 2 * self.window_size[1] - 1 # 在列坐标*2m-1
+        relative_position_index = relative_coords.sum(-1)  # [Mh*Mw, Mh*Mw] # 然后求和，就得到了相对位置偏置表的索引
         self.register_buffer("relative_position_index", relative_position_index)
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
@@ -347,7 +358,9 @@ class SwinTransformerBlock(nn.Module):
             attn_mask = None
 
         # partition windows
+        # 把输入的特征图打成window，然后每个window中做自注意力
         x_windows = window_partition(shifted_x, self.window_size)  # [nW*B, Mh, Mw, C]
+        # 把中间两个维度合并，变成transformer中的序列形式
         x_windows = x_windows.view(-1, self.window_size * self.window_size, C)  # [nW*B, Mh*Mw, C]
 
         # W-MSA/SW-MSA
@@ -378,7 +391,7 @@ class SwinTransformerBlock(nn.Module):
 
 class BasicLayer(nn.Module):
     """
-    A basic Swin Transformer layer for one stage.
+    A basic Swin Transformer layer for one stage. 一个SwinTransformerBlock + PatchMerging
 
     Args:
         dim (int): Number of input channels.
@@ -395,15 +408,24 @@ class BasicLayer(nn.Module):
         use_checkpoint (bool): Whether to use checkpointing to save memory. Default: False.
     """
 
-    def __init__(self, dim, depth, num_heads, window_size,
-                 mlp_ratio=4., qkv_bias=True, drop=0., attn_drop=0.,
-                 drop_path=0., norm_layer=nn.LayerNorm, downsample=None, use_checkpoint=False):
+    def __init__(self, dim, # 当前stage的维度
+                 depth,  # W-MSA + SW-MSA 的堆叠次数
+                 num_heads, # 注意力头数
+                 window_size, # 窗口大小
+                 mlp_ratio=4., # mlp中间层的放大倍率
+                 qkv_bias=True,
+                 drop=0.,
+                 attn_drop=0.,
+                 drop_path=0.,
+                 norm_layer=nn.LayerNorm,
+                 downsample=None, # 是否使用PatchMerging,如果使用将传入PatchMerging类
+                 use_checkpoint=False):
         super().__init__()
         self.dim = dim
         self.depth = depth
         self.window_size = window_size
         self.use_checkpoint = use_checkpoint
-        self.shift_size = window_size // 2
+        self.shift_size = window_size // 2 # 向右向下的偏移量，下取整
 
         # build blocks
         self.blocks = nn.ModuleList([
@@ -429,10 +451,10 @@ class BasicLayer(nn.Module):
     def create_mask(self, x, H, W):
         # calculate attention mask for SW-MSA
         # 保证Hp和Wp是window_size的整数倍
-        Hp = int(np.ceil(H / self.window_size)) * self.window_size
+        Hp = int(np.ceil(H / self.window_size)) * self.window_size # 除以window_size向上取整然后 * window_size
         Wp = int(np.ceil(W / self.window_size)) * self.window_size
         # 拥有和feature map一样的通道排列顺序，方便后续window_partition
-        img_mask = torch.zeros((1, Hp, Wp, 1), device=x.device)  # [1, Hp, Wp, 1]
+        img_mask = torch.zeros((1, Hp, Wp, 1), device=x.device)  # [1, Hp, Wp, 1] 与[B, H, W, C]这个维度对其
         h_slices = (slice(0, -self.window_size),
                     slice(-self.window_size, -self.shift_size),
                     slice(-self.shift_size, None))
@@ -444,7 +466,8 @@ class BasicLayer(nn.Module):
             for w in w_slices:
                 img_mask[:, h, w, :] = cnt
                 cnt += 1
-
+        # img_mask这个变量是先经过上面两层for循环，把连续的区域写上编号，便于window_partition函数在切分完window之后在计算窗口自注意力的时候
+        # 区分是否要计算注意力分数
         mask_windows = window_partition(img_mask, self.window_size)  # [nW, Mh, Mw, 1]
         mask_windows = mask_windows.view(-1, self.window_size * self.window_size)  # [nW, Mh*Mw]
         attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)  # [nW, 1, Mh*Mw] - [nW, Mh*Mw, 1]
@@ -453,6 +476,8 @@ class BasicLayer(nn.Module):
         return attn_mask
 
     def forward(self, x, H, W):
+        # 在官方仓库中，指定了输入图像的宽高，所以只需要创建一次就可以了，但是为了支持不同分辨率的输入
+        # 在这里就在每次forward中创建一次
         attn_mask = self.create_mask(x, H, W)  # [nW, Mh*Mw, Mh*Mw]
         for blk in self.blocks:
             blk.H, blk.W = H, W
@@ -490,16 +515,25 @@ class SwinTransformer(nn.Module):
         use_checkpoint (bool): Whether to use checkpointing to save memory. Default: False
     """
 
-    def __init__(self, patch_size=4, in_chans=3, num_classes=1000,
-                 embed_dim=96, depths=(2, 2, 6, 2), num_heads=(3, 6, 12, 24),
-                 window_size=7, mlp_ratio=4., qkv_bias=True,
-                 drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1,
-                 norm_layer=nn.LayerNorm, patch_norm=True,
+    def __init__(self, patch_size=4,  # 图片输入后先打成patch的大小
+                 in_chans=3,
+                 num_classes=1000,
+                 embed_dim=96, # 模型维度 d_model
+                 depths=(2, 2, 6, 2), # 模型堆叠次数，一个是基于窗口的注意力，一个是基于滑动窗口的注意力
+                 num_heads=(3, 6, 12, 24), # 每个stage的注意力头数
+                 window_size=7, # 窗口大小
+                 mlp_ratio=4., # mlp中间层的维度倍数
+                 qkv_bias=True, # 在生成qkv的时候是否要加上bias
+                 drop_rate=0., # 正常的dropout的大小
+                 attn_drop_rate=0., # attention之后的dropout
+                 drop_path_rate=0.1, # drop_out 的概率
+                 norm_layer=nn.LayerNorm,
+                 patch_norm=True,
                  use_checkpoint=False, **kwargs):
         super().__init__()
 
         self.num_classes = num_classes
-        self.num_layers = len(depths)
+        self.num_layers = len(depths) # stage 个数
         self.embed_dim = embed_dim
         self.patch_norm = patch_norm
         # stage4输出特征矩阵的channels
@@ -530,6 +564,7 @@ class SwinTransformer(nn.Module):
                                 attn_drop=attn_drop_rate,
                                 drop_path=dpr[sum(depths[:i_layer]):sum(depths[:i_layer + 1])],
                                 norm_layer=norm_layer,
+                                # 前面的是有PatchMerging的，最后一层没有
                                 downsample=PatchMerging if (i_layer < self.num_layers - 1) else None,
                                 use_checkpoint=use_checkpoint)
             self.layers.append(layers)

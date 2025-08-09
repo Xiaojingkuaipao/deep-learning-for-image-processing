@@ -10,13 +10,13 @@
 
 ​	每个网格要预测$B$个bounding box，每个bounding box预测5个参数，分别是位置参数$\{x, y, w,h\}$以及confidence值，这个confidence值根据论文里面的表述，这个值表示这个框有多大的把握预测**这个框里有物体**，以及这个**框的定位有多准**，所以计算公式为$\text{confidence} = \Pr(object) * \text{IoU}_{pred}^{truth}$,IoU是计算预测框与真实框的IoU
 
-<img src="C:\Users\ZhijingXin\AppData\Roaming\Typora\typora-user-images\image-20250424090956662.png" alt="image-20250424090956662" style="zoom: 67%;" />
+<img src="./yolo_note.assets/yolov1_1.png" alt="image-20250424090956662" style="zoom: 67%;" />
 
 ### 1.2 网络结构
 
 ​	YOLOv1的骨干网络作者并没有起一个具体的名字，以下网络结构图来自原论文
 
-<img src="C:\Users\ZhijingXin\AppData\Roaming\Typora\typora-user-images\image-20250424091117134.png" alt="image-20250424091117134" style="zoom:67%;" />
+<img src="X:\deep-learning-for-image-processing\object_detection\yolov3_spp\yolo_note.assets\image-20250514105334790.png" alt="image-20250514105334790" style="zoom:67%;" />
 
 ​	首先yolov1的网络接收图片的分辨率为$448 \times 448 \times 3$然后经过以下网络结构
 
@@ -37,13 +37,13 @@
 
 ​	经过最后的卷积层之后得到了一个$7\times7\times1024$的特征图，然后展平，通过一个全连接层得到一个中间纬度为4096的中间表示，然后再经过一个卷积层把它转成1470，然后reshape成$7\times7\times30$的tensor，$7\times7\times30=1470$,$7\times7$个网格，每个网格预测2个bounding box，一个网格预测一个类，Pascal VOC数据集有20个类，所以每个网格要预测$(4 + 1) \times 2 + 20 = 30$个参数
 
-<img src="C:\Users\ZhijingXin\AppData\Roaming\Typora\typora-user-images\image-20250424093459614.png" alt="image-20250424093459614" style="zoom: 50%;" />
+<img src="./yolo_note.assets/yolov1_2.png" alt="image-20250424093459614" style="zoom: 50%;" />
 
 ### 1.3 损失函数
 
 ​	YOLOv1把目标检测看成一个回归问题，损失函数都是使用的误差平方和损失，公式如下
 
-<img src="C:\Users\ZhijingXin\AppData\Roaming\Typora\typora-user-images\image-20250424093725274.png" alt="image-20250424093725274" style="zoom:50%;" />
+<img src="./yolo_note.assets/yolov1_3.png" alt="image-20250424093725274" style="zoom:50%;" />
 
 ​	第一行是对于负责预测目标的网格的网络中心点对的坐标回归误差，第二行是对于负责检测目标的网格的回归框的宽高的回归误差，使用平方根是为了增大小目标检测的误差值，第三行是负责预测物体的网格置信度损失，第四行是不负责预测物体的置信度损失，上面说的置信度都是confidence，第五行是负责预测物体的网格的类别概率损失
 

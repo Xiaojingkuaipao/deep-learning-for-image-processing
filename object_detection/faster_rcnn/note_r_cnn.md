@@ -122,7 +122,7 @@ $$\text{smooth}_{L_1}(x) =
 
 ### 3.1 Region Proposal Network
 
-​	首先backbone抽取出来的特征图被送进区域提议网络中，对于特征图上的每个$3 \times 3$的窗口，通过**感受野**计算出滑动窗口的中心在原图像中的中心点位置，并计算出k个**anchor box(不是proposal，anchor box经过refine 之后选一部分作为proposal)**
+​	首先backbone抽取出来的特征图被送进RPN中，对于特征图上的每个$3 \times 3$的窗口，通过**感受野**计算出滑动窗口的中心在原图像中的中心点位置，并计算出k个**anchor box(不是proposal，anchor box经过refine 之后选一部分作为proposal)**
 
 <img src="./note_r_cnn.assets/image-20250414090515605.png" alt="image-20250414090515605" style="zoom:50%;" /><img src="./note_r_cnn.assets/image-20250414090405701.png" alt="image-20250414090405701" style="zoom: 50%;" />
 
